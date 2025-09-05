@@ -1,0 +1,52 @@
+<!DOCTYPE html>
+<html>
+<head>
+  <title>2 Agent Canvas Chat</title>
+  <script src="/socket.io/socket.io.js"></script>
+  <style>
+    body { background: black; color: white; font-family: monospace; }
+    #canvas { border: 2px solid white; background: #111; }
+    #log { max-height: 200px; overflow-y: auto; background: #222; padding: 8px; }
+  </style>
+</head>
+<body>
+  <h2>Agents Simulation</h2>
+  <canvas id="canvas" width="600" height="400"></canvas>
+  <div id="log"></div>
+
+  <script>
+    const socket = io("http://localhost:3000");
+    const canvas = document.getElementById("canvas");
+    const ctx = canvas.getContext("2d");
+    const logDiv = document.getElementById("log");
+
+    let gameState = {};
+
+    socket.emit("joinRoom", { roomId: "room1" });
+
+    socket.on("agentMessage", ({ from, payload, gameState: state }) => {
+      gameState = state;
+      logDiv.innerHTML += `<p><b>${from}:</b> ${payload.text}</p>`;
+      logDiv.scrollTop = logDiv.scrollHeight;
+      draw();
+    });
+
+    function draw() {
+      ctx.clearRect(0,0,canvas.width,canvas.height);
+
+      // Draw agents
+      for (const agentId in gameState.agents) {
+        const a = gameState.agents[agentId];
+        ctx.fillStyle = agentId === "A" ? "cyan" : "orange";
+        ctx.beginPath();
+        ctx.arc(a.x, a.y, 20, 0, Math.PI * 2);
+        ctx.fill();
+
+        ctx.fillStyle = "white";
+        ctx.fillText(a.name, a.x - 15, a.y - 30);
+        ctx.fillText(a.lastMessage, a.x - 40, a.y + 40);
+      }
+    }
+  </script>
+</body>
+</html>
