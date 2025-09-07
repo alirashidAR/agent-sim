@@ -1,4 +1,3 @@
-
 import express from "express";
 import http from "http";
 import { Server } from "socket.io";
@@ -11,10 +10,7 @@ import { fileURLToPath } from "url";
 const __filename = fileURLToPath(import.meta.url);
 const __dirname = path.dirname(__filename);
 
-
-
 dotenv.config();
-
 
 const app = express();
 const server = http.createServer(app);
@@ -22,17 +18,27 @@ const io = new Server(server, { cors: { origin: "*" } });
 
 app.use(express.static(path.join(__dirname, "public")));
 
-const genai = new GoogleGenAI({
-  apiKey: process.env.GEMINI_API_KEY
-});
+const genai = new GoogleGenAI({ apiKey: process.env.GEMINI_API_KEY });
 
 // === Game state ===
 const gameState = {
   agents: {
-    A: { id: "A", name: "Alice", x: 100, y: 200, lastMessage: "" },
-    B: { id: "B", name: "Bob", x: 400, y: 200, lastMessage: "" }
+    A: { id: "A", name: "Alice", x: 1, y: 1, lastMessage: "", task: null, inventory: [] },
+    B: { id: "B", name: "Bob", x: 3, y: 1, lastMessage: "", task: null, inventory: [] }
+  },
+  environment: {
+    fridge: { x: 2, y: 2 },
+    table: { x: 5, y: 3 },
+    oven: { x: 8, y: 2 }
   }
 };
+
+// Pizza steps
+const pizzaSteps = [
+  { action: "get ingredients", location: "fridge" },
+  { action: "prepare pizza", location: "table" },
+  { action: "bake pizza", location: "oven" }
+];
 
 // === Helper: apply movement commands ===
 function applyCommands(commands) {
@@ -45,7 +51,7 @@ function applyCommands(commands) {
   }
 }
 
-// === Schema for Gemini structured output ===
+// === Gemini schema ===
 const moveCommandSchema = {
   type: Type.OBJECT,
   properties: {
@@ -73,64 +79,78 @@ const responseSchema = {
   propertyOrdering: ["role", "intent", "text", "drawCommands"]
 };
 
-// === Generate agent response ===
+// Assign tasks if missing
+function assignTasks() {
+  Object.values(gameState.agents).forEach((agent, i) => {
+    if (!agent.task) {
+      agent.task = { ...pizzaSteps[i % pizzaSteps.length], step: i % pizzaSteps.length };
+    }
+  });
+}
+
+// Move agent one step towards target
+function moveTowards(agent, target) {
+  if (agent.x < target.x) agent.x++;
+  else if (agent.x > target.x) agent.x--;
+  if (agent.y < target.y) agent.y++;
+  else if (agent.y > target.y) agent.y--;
+}
+
+// === Generate agent response using Gemini ===
 async function agentRespond(roomId, agentId, contextText) {
   const agent = gameState.agents[agentId];
   const otherId = agentId === "A" ? "B" : "A";
 
   const instructionText = `
-You are ${agent.name}, a persona in a 2D canvas simulation.
+You are ${agent.name}, a persona in a 2D grid kitchen simulation.
 You can:
-1. Talk with the other agent.
-2. Move yourself on the canvas.
+1. Talk with ${gameState.agents[otherId].name}.
+2. Move on the grid to complete your pizza task.
 
 Rules:
-- Always reply with JSON only.
-- If you want to move, include a command like:
-  { "type": "move", "agent": "${agentId}", "x": 250, "y": 180 }
-- Keep x between 50–550, y between 50–350.
-- Never invent fields, only use schema.
-- Be natural in conversation with ${gameState.agents[otherId].name}.
+- Always reply with JSON using the schema.
+- If you move, include a command like:
+  { "type": "move", "agent": "${agentId}", "x": 2, "y": 2 }
+- Tasks: pick ingredients (fridge), prepare (table), bake (oven).
+- Keep x between 0–10, y between 0–5.
+- Do not invent fields, follow schema.
+- Be natural in conversation.
 
-Context: The last thing ${gameState.agents[otherId].name} said was:
-"${gameState.agents[otherId].lastMessage || "Nothing yet"}"
+Context: Last thing ${gameState.agents[otherId].name} said: "${gameState.agents[otherId].lastMessage || "Nothing"}"
+Current task: "${agent.task ? agent.task.action : "none"}"
 `;
 
   const response = await genai.models.generateContent({
     model: "gemini-2.5-flash",
     contents: instructionText,
-    config: {
-      responseMimeType: "application/json",
-      responseSchema
-    }
+    config: { responseMimeType: "application/json", responseSchema }
   });
-
-  console.log(`Raw Gemini (${agentId}):`, response.text);
 
   let structured;
   try {
     structured = JSON.parse(response.text);
   } catch (err) {
     console.error("Parse error:", err);
-    structured = {
-      role: agentId,
-      intent: "error",
-      text: "Parsing failed",
-      drawCommands: []
-    };
+    structured = { role: agentId, intent: "error", text: "Parsing failed", drawCommands: [] };
   }
 
-  // Update game state
-  gameState.agents[agentId].lastMessage = structured.text || "";
+  // Update agent
+  agent.lastMessage = structured.text || "";
   applyCommands(structured.drawCommands);
 
-  // Broadcast to clients
-  io.to(roomId).emit("agentMessage", {
-    from: agentId,
-    payload: structured,
-    gameState
-  });
+  // Auto-step toward task if not yet at target
+  if (agent.task) {
+    const target = gameState.environment[agent.task.location];
+    if (target && (agent.x !== target.x || agent.y !== target.y)) {
+      moveTowards(agent, target);
+    } else {
+      agent.inventory.push(agent.task.action);
+      console.log(`${agent.name} completed task: ${agent.task.action}`);
+      agent.task = null;
+    }
+  }
 
+  io.to(roomId).emit("agentMessage", { from: agentId, payload: structured, gameState });
   return structured.text;
 }
 
@@ -147,14 +167,15 @@ io.on("connection", (socket) => {
       gameState
     });
 
-    // Conversation loop
+    // Conversation + task loop
     let lastSpeaker = "B"; // alternate
     setInterval(async () => {
       const nextSpeaker = lastSpeaker === "A" ? "B" : "A";
       const context = `Last message from ${gameState.agents[lastSpeaker].name}: "${gameState.agents[lastSpeaker].lastMessage}"`;
       await agentRespond(roomId, nextSpeaker, context);
+      assignTasks();
       lastSpeaker = nextSpeaker;
-    }, 10000); // every 10 sec
+    }, 5000); // every 5 sec
   });
 });
 

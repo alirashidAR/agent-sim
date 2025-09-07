@@ -1,52 +1,118 @@
 <!DOCTYPE html>
-<html>
+<html lang="en">
 <head>
-  <title>2 Agent Canvas Chat</title>
-  <script src="/socket.io/socket.io.js"></script>
+  <meta charset="UTF-8">
+  <title>2D Kitchen Simulation</title>
+  <script src="https://cdn.jsdelivr.net/npm/phaser@3.60.0/dist/phaser.min.js"></script>
+  <script src="https://cdn.socket.io/4.7.2/socket.io.min.js"></script>
   <style>
-    body { background: black; color: white; font-family: monospace; }
-    #canvas { border: 2px solid white; background: #111; }
-    #log { max-height: 200px; overflow-y: auto; background: #222; padding: 8px; }
+    body { margin: 0; padding: 0; }
+    #game-container { width: 800px; margin: auto; display: block; }
   </style>
 </head>
 <body>
-  <h2>Agents Simulation</h2>
-  <canvas id="canvas" width="600" height="400"></canvas>
-  <div id="log"></div>
-
+  <div id="game-container"></div>
   <script>
-    const socket = io("http://localhost:3000");
-    const canvas = document.getElementById("canvas");
-    const ctx = canvas.getContext("2d");
-    const logDiv = document.getElementById("log");
+    const socket = io();
 
-    let gameState = {};
+    const GRID_SIZE = 50;
+    const WIDTH = 11; // x: 0-10
+    const HEIGHT = 6; // y: 0-5
 
-    socket.emit("joinRoom", { roomId: "room1" });
+    let gameState = null;
+    let agentSprites = {};
+    let chatTexts = {};
+    let environmentSprites = {};
 
-    socket.on("agentMessage", ({ from, payload, gameState: state }) => {
-      gameState = state;
-      logDiv.innerHTML += `<p><b>${from}:</b> ${payload.text}</p>`;
-      logDiv.scrollTop = logDiv.scrollHeight;
-      draw();
-    });
+    const config = {
+      type: Phaser.AUTO,
+      width: GRID_SIZE * WIDTH,
+      height: GRID_SIZE * HEIGHT,
+      parent: 'game-container',
+      scene: {
+        preload: preload,
+        create: create,
+        update: update
+      }
+    };
 
-    function draw() {
-      ctx.clearRect(0,0,canvas.width,canvas.height);
+    const game = new Phaser.Game(config);
 
-      // Draw agents
-      for (const agentId in gameState.agents) {
-        const a = gameState.agents[agentId];
-        ctx.fillStyle = agentId === "A" ? "cyan" : "orange";
-        ctx.beginPath();
-        ctx.arc(a.x, a.y, 20, 0, Math.PI * 2);
-        ctx.fill();
+    function preload() {
+      this.load.image('agentA', 'agentA.png'); // placeholder
+      this.load.image('agentB', 'agentB.png'); // placeholder
+      this.load.image('fridge', 'fridge.png');
+      this.load.image('table', 'table.png');
+      this.load.image('oven', 'oven.png');
+      this.load.image('tile', 'tile.png'); // floor tile
+    }
 
-        ctx.fillStyle = "white";
-        ctx.fillText(a.name, a.x - 15, a.y - 30);
-        ctx.fillText(a.lastMessage, a.x - 40, a.y + 40);
+    function create() {
+      // Draw grid floor
+      for(let x=0;x<WIDTH;x++){
+        for(let y=0;y<HEIGHT;y++){
+          this.add.image(x*GRID_SIZE+GRID_SIZE/2, y*GRID_SIZE+GRID_SIZE/2, 'tile').setScale(0.95);
+        }
+      }
+
+      // Listen for game state updates
+      socket.on('agentMessage', (data) => {
+        gameState = data.gameState;
+        updateAgents(this);
+        updateEnvironment(this);
+      });
+
+      // Join room
+      socket.emit('joinRoom', { roomId: 'kitchen1' });
+    }
+
+    function updateAgents(scene) {
+      if(!gameState) return;
+
+      Object.values(gameState.agents).forEach(agent => {
+        if(!agentSprites[agent.id]){
+          const spriteKey = agent.id === 'A' ? 'agentA' : 'agentB';
+          agentSprites[agent.id] = scene.add.sprite(agent.x*GRID_SIZE+GRID_SIZE/2, agent.y*GRID_SIZE+GRID_SIZE/2, spriteKey).setScale(0.8);
+          chatTexts[agent.id] = scene.add.text(agent.x*GRID_SIZE, agent.y*GRID_SIZE-15, agent.lastMessage, { font: '12px Arial', fill: '#fff' });
+        } else {
+          // move sprite smoothly
+          scene.tweens.add({
+            targets: agentSprites[agent.id],
+            x: agent.x*GRID_SIZE+GRID_SIZE/2,
+            y: agent.y*GRID_SIZE+GRID_SIZE/2,
+            duration: 400
+          });
+          chatTexts[agent.id].setText(agent.lastMessage);
+          chatTexts[agent.id].x = agentSprites[agent.id].x - 20;
+          chatTexts[agent.id].y = agentSprites[agent.id].y - 25;
+        }
+      });
+    }
+
+    function updateEnvironment(scene){
+      const env = gameState.environment;
+      if(!env) return;
+
+      // Fridge
+      if(!environmentSprites.fridge){
+        environmentSprites.fridge = scene.add.sprite(env.fridge.x*GRID_SIZE+GRID_SIZE/2, env.fridge.y*GRID_SIZE+GRID_SIZE/2, 'fridge').setScale(0.8);
+      }
+
+      // Table
+      if(!environmentSprites.table){
+        environmentSprites.table = scene.add.sprite(env.table.x*GRID_SIZE+GRID_SIZE/2, env.table.y*GRID_SIZE+GRID_SIZE/2, 'table').setScale(0.8);
+      }
+
+      // Oven
+      if(!environmentSprites.oven){
+        environmentSprites.oven = scene.add.sprite(env.oven.x*GRID_SIZE+GRID_SIZE/2, env.oven.y*GRID_SIZE+GRID_SIZE/2, 'oven').setScale(0.8);
       }
     }
+
+    function update() {
+      // Nothing here yet, movement is handled by tweens
+    }
+
   </script>
 </body>
 </html>
