@@ -1,52 +1,211 @@
 <!DOCTYPE html>
 <html>
 <head>
-  <title>2 Agent Canvas Chat</title>
+  <title>Cozy 2D LLM Agent World</title>
   <script src="/socket.io/socket.io.js"></script>
   <style>
-    body { background: black; color: white; font-family: monospace; }
-    #canvas { border: 2px solid white; background: #111; }
-    #log { max-height: 200px; overflow-y: auto; background: #222; padding: 8px; }
+    body { background: #BDE2EC; color: #222; font-family: 'Press Start 2P', monospace; }
+    #canvas { border: 2px solid #bedfee; background: #E8F2EE; display: block; margin: 24px auto;}
+    h2 { color: #F8D77A; text-align:center; margin-top:9px; font-size:2rem; letter-spacing:2px;}
+    #log { display: none; }
   </style>
 </head>
 <body>
-  <h2>Agents Simulation</h2>
-  <canvas id="canvas" width="600" height="400"></canvas>
+  <h2>Cozy 2D LLM Agent World</h2>
+  <canvas id="canvas" width="850" height="530"></canvas>
   <div id="log"></div>
+<script>
+const AGENT_PNG = {
+  "A": "assets/alice.png",
+  "B": "assets/bob.png"
+};
+const FLOWERS = [
+  "assets/foliagePack_001.png",
+  "assets/foliagePack_002.png",
+  "assets/foliagePack_003.png"
+];
 
-  <script>
-    const socket = io("http://localhost:3000");
-    const canvas = document.getElementById("canvas");
-    const ctx = canvas.getContext("2d");
-    const logDiv = document.getElementById("log");
+// -- Agent locations: home and common area
+const aliceHome = { x: 160,  y: 120 };
+const bobHome   = { x: 720,  y: 125 };
+const aliceCommon = { x: 335, y: 375 };
+const bobCommon   = { x: 515, y: 380 };
 
-    let gameState = {};
+const canvas = document.getElementById("canvas"),
+      ctx = canvas.getContext("2d");
+let agentImages = {}, flowerImgs = [], flowerSpots = [];
+let gameState = {
+  agents: {
+    A: { name: "Alice", x: aliceHome.x, y: aliceHome.y, lastMessage: "Hello from Alice!", shouldInteract: false },
+    B: { name: "Bob",   x: bobHome.x,   y: bobHome.y,   lastMessage: "Hey there from Bob!", shouldInteract: false }
+  }
+};
 
-    socket.emit("joinRoom", { roomId: "room1" });
+//--- Load PNG assets ---
+function preloadImgs(callback) {
+  let loaded = 0, needed = 2 + FLOWERS.length;
+  function done() { if(++loaded === needed) callback(); }
+  ["A","B"].forEach(id => {
+    agentImages[id] = new Image(); agentImages[id].src = AGENT_PNG[id]; agentImages[id].onload = done;
+  });
+  FLOWERS.forEach((f,i)=>{
+    flowerImgs[i] = new Image(); flowerImgs[i].src = f; flowerImgs[i].onload = done;
+  });
+}
 
-    socket.on("agentMessage", ({ from, payload, gameState: state }) => {
-      gameState = state;
-      logDiv.innerHTML += `<p><b>${from}:</b> ${payload.text}</p>`;
-      logDiv.scrollTop = logDiv.scrollHeight;
-      draw();
-    });
+//--- Draw chat bubble (above head), word-wrap + little drop shadow
+function drawBubble(text, x, y, color="#295c2e") {
+  ctx.font = "15px 'Press Start 2P', monospace";
+  ctx.textBaseline = "top"; ctx.textAlign = "left";
+  let words = text.split(" "), lines=[], line="";
+  for (let w of words) { if((line+" "+w).trim().length > 17) { lines.push(line.trim()); line = ""; }
+    line += " "+w; }
+  if(line.trim().length) lines.push(line.trim());
+  let w = Math.max(...lines.map(l => ctx.measureText(l).width)) + 22, h = lines.length*19 + 18;
+  ctx.save();
+  ctx.shadowBlur = 12; ctx.shadowColor = "#d2ccbb";
+  ctx.beginPath(); ctx.roundRect(x-w/2, y-h-19, w, h, 10); ctx.fillStyle = "#fffde8"; ctx.fill();
+  ctx.shadowBlur = 0;
+  ctx.strokeStyle = "#cabda3"; ctx.lineWidth = 2;
+  ctx.strokeRect(x-w/2, y-h-19, w, h);
+  // Tail
+  ctx.beginPath();
+  ctx.moveTo(x, y-13); ctx.lineTo(x-8, y-19); ctx.lineTo(x+8, y-19); ctx.closePath(); ctx.fillStyle="#fffde8"; ctx.fill();
+  ctx.stroke();
+  // Text
+  ctx.fillStyle = color;
+  for(let i=0;i<lines.length;++i)
+    ctx.fillText(lines[i], x-w/2+10, y-h-8+i*19 + 2);
+  ctx.restore();
+}
 
-    function draw() {
-      ctx.clearRect(0,0,canvas.width,canvas.height);
+//--- Animate agent positions towards goal
+function moveTowards(a, goal, speed=0.12) {
+  a.x += (goal.x - a.x) * speed;
+  a.y += (goal.y - a.y) * speed;
+}
 
-      // Draw agents
-      for (const agentId in gameState.agents) {
-        const a = gameState.agents[agentId];
-        ctx.fillStyle = agentId === "A" ? "cyan" : "orange";
-        ctx.beginPath();
-        ctx.arc(a.x, a.y, 20, 0, Math.PI * 2);
-        ctx.fill();
+//--- Main draw loop
+function draw() {
+  ctx.clearRect(0, 0, canvas.width, canvas.height);
 
-        ctx.fillStyle = "white";
-        ctx.fillText(a.name, a.x - 15, a.y - 30);
-        ctx.fillText(a.lastMessage, a.x - 40, a.y + 40);
+  // -- Large kingdom bubbles
+  ctx.save();
+  ctx.beginPath();
+  ctx.arc(aliceHome.x+6, aliceHome.y+20, 135, 0, 2*Math.PI);
+  ctx.fillStyle = "#e6fbe1";
+  ctx.shadowBlur=19; ctx.shadowColor="#aad6af"; ctx.globalAlpha = 0.91;
+  ctx.fill(); ctx.globalAlpha = 1; ctx.shadowBlur=0; ctx.restore();
+
+  ctx.save();
+  ctx.beginPath();
+  ctx.arc(bobHome.x-6, bobHome.y+24, 140, 0, 2*Math.PI);
+  ctx.fillStyle = "#fdf9e1";
+  ctx.shadowBlur=16; ctx.shadowColor="#e7daa6"; ctx.globalAlpha = 0.94;
+  ctx.fill(); ctx.globalAlpha = 1; ctx.restore();
+
+  // -- Common area (soft ellipse)
+  ctx.save();
+  ctx.beginPath();
+  ctx.ellipse(canvas.width/2, 410, 205, 70, 0, 0, 2 * Math.PI);
+  ctx.fillStyle = "#f3eefd"; ctx.globalAlpha = 0.96;
+  ctx.shadowBlur=34; ctx.shadowColor="#bcbde6";
+  ctx.fill(); ctx.globalAlpha = 1; ctx.restore();
+
+  // -- Labels
+  ctx.font = "bold 27px monospace";
+  ctx.fillStyle = "#37a16d";
+  ctx.fillText("Alice's Kingdom", 45, 52);
+  ctx.fillStyle = "#b0851b";
+  ctx.fillText("Bob's Kingdom", canvas.width-265, 62);
+  ctx.fillStyle = "#a59ade";
+  ctx.fillText("Common Area", canvas.width/2-100, 120);
+
+  // -- Flora
+  // Clustered near homes, and a thick band in the common ellipse
+  function flowerPatch(cx, cy, rx, ry, n) {
+    for(let i=0;i<n;i++){
+      let a = Math.random()*2*Math.PI, rX = rx*(0.65+Math.random()*0.4), rY = ry*(0.65+Math.random()*0.4);
+      let fx = cx + Math.cos(a)*rX + Math.random()*15-7, fy = cy + Math.sin(a)*rY + Math.random()*12-6;
+      flowerSpots.push({x: fx, y: fy});
+    }
+  }
+  flowerSpots = [];
+  flowerPatch(aliceHome.x, aliceHome.y+40, 68, 28, 7);
+  flowerPatch(bobHome.x, bobHome.y+43, 73, 32, 8);
+  flowerPatch(canvas.width/2, 400, 180, 37, 14);
+  for(let i=0; i<flowerSpots.length; ++i){
+    let f = flowerImgs[i%flowerImgs.length];
+    ctx.save();
+    ctx.globalAlpha = 0.75 + 0.22*Math.sin(i+1);
+    ctx.drawImage(f, flowerSpots[i].x, flowerSpots[i].y, 28, 28);
+    ctx.restore();
+  }
+
+  // -- MAIN: Agents
+  for(const agentId in gameState.agents) {
+    const a = gameState.agents[agentId];
+    // Pick target: if shouldInteract, go to common, else go home
+    let target = a.shouldInteract
+      ? (agentId === "A" ? aliceCommon : bobCommon)
+      : (agentId === "A" ? aliceHome : bobHome);
+    moveTowards(a, target, 0.18);
+
+    // Perimeter on the ground
+    ctx.save();
+    ctx.beginPath();
+    ctx.arc(a.x, a.y, 48, 0, 2 * Math.PI);
+    ctx.globalAlpha = 0.14;
+    ctx.fillStyle = agentId === "A" ? "#6eda90" : "#ecd389";
+    ctx.fill(); ctx.globalAlpha = 1; ctx.restore();
+
+    // Avatar (rounded)
+    ctx.save();
+    ctx.beginPath();
+    ctx.arc(a.x, a.y, 38, 0, 2 * Math.PI); ctx.closePath();
+    ctx.clip();
+    if(agentImages[agentId])
+      ctx.drawImage(agentImages[agentId], a.x-38, a.y-38, 76, 76);
+    ctx.restore();
+
+    // Name
+    ctx.font = "bold 18px 'Press Start 2P', monospace"; ctx.textAlign = "center";
+    ctx.strokeStyle = "#fff"; ctx.lineWidth = 4;
+    ctx.strokeText(a.name, a.x, a.y-46);
+    ctx.fillStyle = agentId === "A" ? "#37a16d" : "#bc960b";
+    ctx.fillText(a.name, a.x, a.y-46);
+
+    // Chat bubble only if there's a message
+    if(a.lastMessage)
+      drawBubble(a.lastMessage, a.x, a.y-56, agentId==="A" ? "#295c2e" : "#725c25");
+  }
+}
+
+// -- Initial draw after images load
+preloadImgs(()=>{ draw(); });
+
+// --- SOCKET/LLM: Update state, trigger draw
+const socket = io("http://localhost:3000");
+socket.emit("joinRoom", { roomId: "room1" });
+socket.on("agentMessage", ({ from, payload, gameState: state }) => {
+  // For movement: set agent shouldInteract based on LLM state
+  // Example: backend can send { shouldInteract: true } when it's chat time
+  if (state && state.agents) {
+    for(let id in state.agents) {
+      // if your backend sends a flag, use it, else use a fallback (simulate: in common if both have lastMessage)
+      if(typeof state.agents[id].shouldInteract === "undefined") {
+        // Suppose both are "in common" if both have lastMessage in the last 2 seconds
+        let bothActive = Object.values(state.agents).every(a=>a.lastMessage && a.lastMessage.length>0);
+        state.agents[id].shouldInteract = bothActive;
       }
     }
-  </script>
+  }
+  gameState = state;
+  draw();
+});
+
+// Animation loop
+setInterval(draw, 80);
+</script>
 </body>
 </html>
