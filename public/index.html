@@ -1,211 +1,215 @@
 <!DOCTYPE html>
 <html>
 <head>
-  <title>Cozy 2D LLM Agent World</title>
+  <title>Cozy LLM Agent Rooms</title>
+  <script src="https://cdn.jsdelivr.net/npm/phaser@3/dist/phaser.min.js"></script>
   <script src="/socket.io/socket.io.js"></script>
   <style>
-    body { background: #BDE2EC; color: #222; font-family: 'Press Start 2P', monospace; }
-    #canvas { border: 2px solid #bedfee; background: #E8F2EE; display: block; margin: 24px auto;}
-    h2 { color: #F8D77A; text-align:center; margin-top:9px; font-size:2rem; letter-spacing:2px;}
-    #log { display: none; }
+    html, body { height: 100%; margin: 0; background: #cbe6f7; }
+    body { width: 100vw; height: 100vh; overflow: hidden; }
+    #phaser-container { width: 100vw; height: 100vh; margin: 0; display: block;}
   </style>
 </head>
 <body>
-  <h2>Cozy 2D LLM Agent World</h2>
-  <canvas id="canvas" width="850" height="530"></canvas>
-  <div id="log"></div>
+  <div id="phaser-container"></div>
 <script>
-const AGENT_PNG = {
+// -- Agent and prop placeholders --
+// Put your file PNGs here if you have them:
+const AGENT_PNGS = {
   "A": "assets/alice.png",
-  "B": "assets/bob.png"
+  "B": "assets/bob.png",
+  "C": "assets/personC.png",
+  "D": "assets/personD.png"
 };
-const FLOWERS = [
-  "assets/foliagePack_001.png",
-  "assets/foliagePack_002.png",
-  "assets/foliagePack_003.png"
-];
+// Fallback icons by task (change as you get real tasks/PNGs)
+const TASK_ICONS = {
+  baker: "🥖",  artist: "🎨",  farmer: "🥕",  scientist: "🔬",  "?": "❓"
+};
+const ROOM_COLORS = [ "#e6fbe1", "#fdf9e1", "#ffe1f4", "#e7f3fc" ];
+const AGENT_NAMES = [ "Alice", "Bob", "Carol", "Dave" ];
 
-// -- Agent locations: home and common area
-const aliceHome = { x: 160,  y: 120 };
-const bobHome   = { x: 720,  y: 125 };
-const aliceCommon = { x: 335, y: 375 };
-const bobCommon   = { x: 515, y: 380 };
-
-const canvas = document.getElementById("canvas"),
-      ctx = canvas.getContext("2d");
-let agentImages = {}, flowerImgs = [], flowerSpots = [];
 let gameState = {
   agents: {
-    A: { name: "Alice", x: aliceHome.x, y: aliceHome.y, lastMessage: "Hello from Alice!", shouldInteract: false },
-    B: { name: "Bob",   x: bobHome.x,   y: bobHome.y,   lastMessage: "Hey there from Bob!", shouldInteract: false }
+    A: { id:"A", name:"Alice", x:0, y:0, lastMessage:"Hi Bob!", task:"baker" },
+    B: { id:"B", name:"Bob",   x:0, y:0, lastMessage:"Hello Alice!", task:"artist" }
+    // Add more as needed
   }
 };
+let agentSprites = {};
+let width = window.innerWidth, height = window.innerHeight, scene, scale = 1.0;
 
-//--- Load PNG assets ---
-function preloadImgs(callback) {
-  let loaded = 0, needed = 2 + FLOWERS.length;
-  function done() { if(++loaded === needed) callback(); }
-  ["A","B"].forEach(id => {
-    agentImages[id] = new Image(); agentImages[id].src = AGENT_PNG[id]; agentImages[id].onload = done;
-  });
-  FLOWERS.forEach((f,i)=>{
-    flowerImgs[i] = new Image(); flowerImgs[i].src = f; flowerImgs[i].onload = done;
-  });
+const config = {
+  type: Phaser.AUTO,
+  scale: { mode: Phaser.Scale.RESIZE, autoCenter: Phaser.Scale.CENTER_BOTH },
+  parent: 'phaser-container',
+  transparent: false,
+  backgroundColor: "#cbe6f7",
+  scene: { preload, create, update }
+};
+
+// Map agent keys to corners for up to 4 agents (top-left, top-right, bottom-left, bottom-right)
+const AGENT_LAYOUT = [
+  { anchor: "topleft",   dx:-1, dy:-1 },
+  { anchor: "topright",  dx:1,  dy:-1 },
+  { anchor: "botleft",   dx:-1, dy:1 },
+  { anchor: "botright",  dx:1,  dy:1 }
+];
+
+// Main responsive sizes
+function calcLayout() {
+  width = window.innerWidth;
+  height = window.innerHeight;
+  // Common room is square, take as much space as fits
+  let commonW = Math.floor(Math.min(width, height) * 0.39);
+  let roomW = Math.floor(commonW * 0.78);
+  let margin = Math.floor(commonW * 0.1);
+  let cx = width/2, cy = height/2;
+  // Corners
+  return {
+    commonRoom: { x:cx, y:cy, w:commonW, h:commonW },
+    agentRooms: [
+      { x:cx-(commonW/2)-(roomW/2)+margin, y:cy-(commonW/2)-(roomW/2)+margin, w:roomW, h:roomW }, // TL
+      { x:cx+(commonW/2)+(roomW/2)-margin, y:cy-(commonW/2)-(roomW/2)+margin, w:roomW, h:roomW }, // TR
+      { x:cx-(commonW/2)-(roomW/2)+margin, y:cy+(commonW/2)+(roomW/2)-margin, w:roomW, h:roomW }, // BL
+      { x:cx+(commonW/2)+(roomW/2)-margin, y:cy+(commonW/2)+(roomW/2)-margin, w:roomW, h:roomW }  // BR
+    ]
+  };
 }
 
-//--- Draw chat bubble (above head), word-wrap + little drop shadow
-function drawBubble(text, x, y, color="#295c2e") {
-  ctx.font = "15px 'Press Start 2P', monospace";
-  ctx.textBaseline = "top"; ctx.textAlign = "left";
-  let words = text.split(" "), lines=[], line="";
-  for (let w of words) { if((line+" "+w).trim().length > 17) { lines.push(line.trim()); line = ""; }
-    line += " "+w; }
-  if(line.trim().length) lines.push(line.trim());
-  let w = Math.max(...lines.map(l => ctx.measureText(l).width)) + 22, h = lines.length*19 + 18;
-  ctx.save();
-  ctx.shadowBlur = 12; ctx.shadowColor = "#d2ccbb";
-  ctx.beginPath(); ctx.roundRect(x-w/2, y-h-19, w, h, 10); ctx.fillStyle = "#fffde8"; ctx.fill();
-  ctx.shadowBlur = 0;
-  ctx.strokeStyle = "#cabda3"; ctx.lineWidth = 2;
-  ctx.strokeRect(x-w/2, y-h-19, w, h);
-  // Tail
-  ctx.beginPath();
-  ctx.moveTo(x, y-13); ctx.lineTo(x-8, y-19); ctx.lineTo(x+8, y-19); ctx.closePath(); ctx.fillStyle="#fffde8"; ctx.fill();
-  ctx.stroke();
-  // Text
-  ctx.fillStyle = color;
-  for(let i=0;i<lines.length;++i)
-    ctx.fillText(lines[i], x-w/2+10, y-h-8+i*19 + 2);
-  ctx.restore();
+// Simple SVG/canvas icon if no task PNG available
+function drawTaskIcon(ctx, icon, x, y) {
+  ctx.font = "32px serif";
+  ctx.textAlign = "center";
+  ctx.textBaseline = "middle";
+  ctx.strokeStyle="#fff"; ctx.lineWidth=6;
+  ctx.strokeText(icon, x, y);
+  ctx.fillStyle="#444";
+  ctx.fillText(icon, x, y);
 }
 
-//--- Animate agent positions towards goal
-function moveTowards(a, goal, speed=0.12) {
-  a.x += (goal.x - a.x) * speed;
-  a.y += (goal.y - a.y) * speed;
+function preload() {
+  scene = this;
+  for (let key in AGENT_PNGS) scene.load.image(key, AGENT_PNGS[key]);
 }
 
-//--- Main draw loop
-function draw() {
-  ctx.clearRect(0, 0, canvas.width, canvas.height);
+function create() {
+  this.graphics = this.add.graphics();
+  window.addEventListener('resize', ()=>scene.scene.restart());
+}
 
-  // -- Large kingdom bubbles
-  ctx.save();
-  ctx.beginPath();
-  ctx.arc(aliceHome.x+6, aliceHome.y+20, 135, 0, 2*Math.PI);
-  ctx.fillStyle = "#e6fbe1";
-  ctx.shadowBlur=19; ctx.shadowColor="#aad6af"; ctx.globalAlpha = 0.91;
-  ctx.fill(); ctx.globalAlpha = 1; ctx.shadowBlur=0; ctx.restore();
+function update() {
+  // --- LAYOUT ---
+  const layout = calcLayout();
 
-  ctx.save();
-  ctx.beginPath();
-  ctx.arc(bobHome.x-6, bobHome.y+24, 140, 0, 2*Math.PI);
-  ctx.fillStyle = "#fdf9e1";
-  ctx.shadowBlur=16; ctx.shadowColor="#e7daa6"; ctx.globalAlpha = 0.94;
-  ctx.fill(); ctx.globalAlpha = 1; ctx.restore();
+  // --- REDRAW ALL ---
+  scene.graphics.clear();
 
-  // -- Common area (soft ellipse)
-  ctx.save();
-  ctx.beginPath();
-  ctx.ellipse(canvas.width/2, 410, 205, 70, 0, 0, 2 * Math.PI);
-  ctx.fillStyle = "#f3eefd"; ctx.globalAlpha = 0.96;
-  ctx.shadowBlur=34; ctx.shadowColor="#bcbde6";
-  ctx.fill(); ctx.globalAlpha = 1; ctx.restore();
+  // --- Common room (middle square) ---
+  scene.graphics.lineStyle(5,0xb3adab,1);
+  scene.graphics.fillStyle(0xf7f5f3,0.96);
+  scene.graphics.strokeRoundedRect(
+    layout.commonRoom.x-layout.commonRoom.w/2, layout.commonRoom.y-layout.commonRoom.h/2,
+    layout.commonRoom.w, layout.commonRoom.h, 34
+  );
+  scene.graphics.fillRoundedRect(
+    layout.commonRoom.x-layout.commonRoom.w/2, layout.commonRoom.y-layout.commonRoom.h/2,
+    layout.commonRoom.w, layout.commonRoom.h, 34
+  );
+  // Label
+  scene.add.text(layout.commonRoom.x, layout.commonRoom.y-layout.commonRoom.h/2+32, "Common Room",
+    {fontFamily:"monospace",fontSize:'2.1vw',fill:"#5942ae"}).setOrigin(0.5,0).setDepth(3);
 
-  // -- Labels
-  ctx.font = "bold 27px monospace";
-  ctx.fillStyle = "#37a16d";
-  ctx.fillText("Alice's Kingdom", 45, 52);
-  ctx.fillStyle = "#b0851b";
-  ctx.fillText("Bob's Kingdom", canvas.width-265, 62);
-  ctx.fillStyle = "#a59ade";
-  ctx.fillText("Common Area", canvas.width/2-100, 120);
+  // --- AGENT ROOMS ---
+  let i=0;
+  for (let id in gameState.agents) {
+    let ag = gameState.agents[id];
+    let room = layout.agentRooms[i];
+    let color = Phaser.Display.Color.HexStringToColor(ROOM_COLORS[i%ROOM_COLORS.length]).color;
+    scene.graphics.lineStyle(5,0xb3adab,1);
+    scene.graphics.fillStyle(color,0.85);
+    // Room rect (rounded, with slight shadow)
+    scene.graphics.fillRoundedRect(
+      room.x-room.w/2, room.y-room.h/2, room.w, room.h, 36
+    );
+    scene.graphics.strokeRoundedRect(
+      room.x-room.w/2, room.y-room.h/2, room.w, room.h, 36
+    );
+    // Label
+    scene.add.text(room.x, room.y-room.h/2+26,
+      `${ag.name}'s Room`, {fontFamily:"monospace",fontSize:'1.9vw', fill:"#45b166",align:"center"}).setOrigin(0.5,0);
 
-  // -- Flora
-  // Clustered near homes, and a thick band in the common ellipse
-  function flowerPatch(cx, cy, rx, ry, n) {
-    for(let i=0;i<n;i++){
-      let a = Math.random()*2*Math.PI, rX = rx*(0.65+Math.random()*0.4), rY = ry*(0.65+Math.random()*0.4);
-      let fx = cx + Math.cos(a)*rX + Math.random()*15-7, fy = cy + Math.sin(a)*rY + Math.random()*12-6;
-      flowerSpots.push({x: fx, y: fy});
+    // "Door" open to common room:
+    let doorW = Math.max(30, room.w*0.18);
+    let doorH = layout.commonRoom.w*0.28;
+    // At shared corner between agent room and common room
+    let doorX = layout.commonRoom.x + (room.x-layout.commonRoom.x)/Math.abs(room.x-layout.commonRoom.x || 1) * layout.commonRoom.w/2;
+    let doorY = layout.commonRoom.y + (room.y-layout.commonRoom.y)/Math.abs(room.y-layout.commonRoom.y || 1) * layout.commonRoom.h/2;
+    scene.graphics.fillStyle(0xede7cf, 1);
+    scene.graphics.fillRoundedRect(
+      doorX-(doorW/2), doorY-(doorH/2), doorW, doorH, 13
+    );
+
+    // If you want an arch or more rounded door, you can draw a portion of an ellipse/circle
+
+    // --- AGENT SPRITE/ICON ---
+    // Where in room? Fixed offset from center
+    let avatarX = Phaser.Math.Clamp(
+      room.x+(layout.commonRoom.x-room.x)*0.7,    // closer to own side/corner
+      room.x-room.w/2+50, room.x+room.w/2-56
+    );
+    let avatarY = Phaser.Math.Clamp(
+      room.y+(layout.commonRoom.y-room.y)*0.7,
+      room.y-room.h/2+64, room.y+room.h/2-60
+    );
+
+    // If they're moving, interpolate pos; else fixed
+    let agX = ag.x, agY = ag.y;
+    // If (x,y) is in own room, render there, else if (in common), use common; else fallback to "walking"
+    const epsilon = 17;
+    let inCommon = Math.abs(ag.x-layout.commonRoom.x)<layout.commonRoom.w/2-epsilon
+                && Math.abs(ag.y-layout.commonRoom.y)<layout.commonRoom.h/2-epsilon;
+    let inHome =
+      Math.abs(ag.x-room.x)<room.w/2-epsilon && Math.abs(ag.y-room.y)<room.h/2-epsilon;
+    // If out of bounds (wrong room) snap to path
+    if (!inCommon && !inHome) {
+      agX = ag.x; agY = ag.y;
+    } else if (inHome) {
+      agX = avatarX; agY = avatarY;
+    } else if (inCommon) {
+      agX = layout.commonRoom.x + ((i===0)?-layout.commonRoom.w/4 : layout.commonRoom.w/4), agY = layout.commonRoom.y+layout.commonRoom.h/6+(i%2 ? 22 : -22);
     }
-  }
-  flowerSpots = [];
-  flowerPatch(aliceHome.x, aliceHome.y+40, 68, 28, 7);
-  flowerPatch(bobHome.x, bobHome.y+43, 73, 32, 8);
-  flowerPatch(canvas.width/2, 400, 180, 37, 14);
-  for(let i=0; i<flowerSpots.length; ++i){
-    let f = flowerImgs[i%flowerImgs.length];
-    ctx.save();
-    ctx.globalAlpha = 0.75 + 0.22*Math.sin(i+1);
-    ctx.drawImage(f, flowerSpots[i].x, flowerSpots[i].y, 28, 28);
-    ctx.restore();
-  }
 
-  // -- MAIN: Agents
-  for(const agentId in gameState.agents) {
-    const a = gameState.agents[agentId];
-    // Pick target: if shouldInteract, go to common, else go home
-    let target = a.shouldInteract
-      ? (agentId === "A" ? aliceCommon : bobCommon)
-      : (agentId === "A" ? aliceHome : bobHome);
-    moveTowards(a, target, 0.18);
+    // Draw agent avatar
+    if(!agentSprites[id]) { // make sprite if not exists
+      agentSprites[id] = scene.add.image(agX, agY, id).setDisplaySize(74,74).setDepth(5);
+      agentSprites[id].taskText = scene.add.text(agX, agY+48, "", {fontFamily:"monospace",fontSize:'1.8vw',fill:"#e842b8"}).setOrigin(0.5,0.5).setDepth(6);
+      agentSprites[id].nameText = scene.add.text(agX, agY-46, ag.name, {fontFamily:"monospace",fontSize:'1.2vw',fill:"#40914a",stroke:'#fff',strokeThickness:3}).setOrigin(0.5);
+      agentSprites[id].bubble = null;
+    }
+    agentSprites[id].setPosition(agX, agY);
+    agentSprites[id].nameText.setPosition(agX, agY-46);
+    agentSprites[id].taskText.setText(TASK_ICONS[ag.task]||TASK_ICONS["?"]);
+    agentSprites[id].taskText.setPosition(agX, agY+48);
 
-    // Perimeter on the ground
-    ctx.save();
-    ctx.beginPath();
-    ctx.arc(a.x, a.y, 48, 0, 2 * Math.PI);
-    ctx.globalAlpha = 0.14;
-    ctx.fillStyle = agentId === "A" ? "#6eda90" : "#ecd389";
-    ctx.fill(); ctx.globalAlpha = 1; ctx.restore();
-
-    // Avatar (rounded)
-    ctx.save();
-    ctx.beginPath();
-    ctx.arc(a.x, a.y, 38, 0, 2 * Math.PI); ctx.closePath();
-    ctx.clip();
-    if(agentImages[agentId])
-      ctx.drawImage(agentImages[agentId], a.x-38, a.y-38, 76, 76);
-    ctx.restore();
-
-    // Name
-    ctx.font = "bold 18px 'Press Start 2P', monospace"; ctx.textAlign = "center";
-    ctx.strokeStyle = "#fff"; ctx.lineWidth = 4;
-    ctx.strokeText(a.name, a.x, a.y-46);
-    ctx.fillStyle = agentId === "A" ? "#37a16d" : "#bc960b";
-    ctx.fillText(a.name, a.x, a.y-46);
-
-    // Chat bubble only if there's a message
-    if(a.lastMessage)
-      drawBubble(a.lastMessage, a.x, a.y-56, agentId==="A" ? "#295c2e" : "#725c25");
+    // Chat bubble (draw as dom text for now)
+    if(agentSprites[id].bubble) agentSprites[id].bubble.destroy();
+    if(ag.lastMessage && ag.lastMessage.length>0) {
+      agentSprites[id].bubble = scene.add.text(agX, agY-68, ag.lastMessage,
+        {fontFamily:"monospace",fontSize:'1.07vw',backgroundColor:"#fff9e7",color:"#444",padding:{x:9,y:7}})
+        .setOrigin(0.5,1).setDepth(100).setShadow(2,2,"#ddc",3,true,true);
+    }
+    i++;
   }
 }
 
-// -- Initial draw after images load
-preloadImgs(()=>{ draw(); });
-
-// --- SOCKET/LLM: Update state, trigger draw
-const socket = io("http://localhost:3000");
+// -- SOCKET.IO
+const socket = io();
 socket.emit("joinRoom", { roomId: "room1" });
 socket.on("agentMessage", ({ from, payload, gameState: state }) => {
-  // For movement: set agent shouldInteract based on LLM state
-  // Example: backend can send { shouldInteract: true } when it's chat time
-  if (state && state.agents) {
-    for(let id in state.agents) {
-      // if your backend sends a flag, use it, else use a fallback (simulate: in common if both have lastMessage)
-      if(typeof state.agents[id].shouldInteract === "undefined") {
-        // Suppose both are "in common" if both have lastMessage in the last 2 seconds
-        let bothActive = Object.values(state.agents).every(a=>a.lastMessage && a.lastMessage.length>0);
-        state.agents[id].shouldInteract = bothActive;
-      }
-    }
-  }
-  gameState = state;
-  draw();
+  gameState = state; // x,y is updated by backend, tasks etc if set
 });
 
-// Animation loop
-setInterval(draw, 80);
+window.onload = () => new Phaser.Game(config);
 </script>
 </body>
 </html>

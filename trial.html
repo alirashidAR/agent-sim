@@ -1,0 +1,105 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>Tiled Background with Rooms</title>
+  <style>
+    body {
+      margin: 0;
+      height: 100vh;
+      display: flex;
+      justify-content: center;
+      align-items: center;
+      /* background image tiled */
+      background: url("tile1.png") repeat;
+      background-size: 200px 180px; /* adjust to match pixel tile size */
+      overflow: hidden;
+    }
+
+    .container {
+      position: relative;
+      width: 30vw;
+      height: 30vh;
+    }
+
+    /* Center room */
+    .square {
+    width: 40vw; 
+    height: 50vh;
+    background-color: #4a90e2;   /* fallback if image not loaded */
+    background-image: url("common1.png");
+    background-size: 100% 100%;   /* stretch perfectly to rectangle */
+    background-position: center;
+    background-repeat: no-repeat;
+    position: absolute;
+    top: 50%;
+    left: 50%;
+    transform: translate(-50%, -50%);
+    cursor: pointer;
+    z-index: 3;
+    }
+
+    .corner {
+      position: absolute;
+      display: none;
+      z-index: 1;
+    }
+
+    .top-left {
+      width: 50vw;
+      height: 50vh;
+      top: -50vh;
+      left: -50vw;
+      background: #e74c3c;
+    }
+    .top-right {
+      width: 50vw;
+      height: 50vh;
+      top: -50vh;
+      left: 30vw;
+      background: #2ecc71;
+    }
+    .bottom-left {
+      width: 50vw;
+      height: 50vh;
+      top: 30vh;
+      left: -50vw;
+      background: #f1c40f;
+    }
+    .bottom-right {
+      width: 50vw;
+      height: 50vh;
+      top: 30vh;
+      left: 30vw;
+      background: #9b59b6;
+    }
+
+    .show {
+      display: block;
+    }
+  </style>
+</head>
+<body>
+  <div class="container">
+    <div class="square" id="centerSquare"></div>
+    <div class="corner top-left"></div>
+    <div class="corner top-right"></div>
+    <div class="corner bottom-left"></div>
+    <div class="corner bottom-right"></div>
+  </div>
+
+  <script>
+    const centerSquare = document.getElementById("centerSquare");
+    const corners = document.querySelectorAll(".corner");
+    let clickCount = 0;
+
+    centerSquare.addEventListener("click", () => {
+      if (clickCount < corners.length) {
+        corners[clickCount].classList.add("show");
+        clickCount++;
+      }
+    });
+  </script>
+</body>
+</html>
